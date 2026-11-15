@@ -1,0 +1,5 @@
+[project]
+title = Mangler
+
+[library]
+include_dirs = mangler
