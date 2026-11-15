@@ -88,20 +88,20 @@ public final class XXH3 {
 
     private static long readLE64(byte[] b, int off) {
         return (b[off] & 0xFFL)
-                | (b[off + 1] & 0xFFL) << 8
-                | (b[off + 2] & 0xFFL) << 16
-                | (b[off + 3] & 0xFFL) << 24
-                | (b[off + 4] & 0xFFL) << 32
-                | (b[off + 5] & 0xFFL) << 40
-                | (b[off + 6] & 0xFFL) << 48
-                | (b[off + 7] & 0xFFL) << 56;
+            | (b[off + 1] & 0xFFL) << 8
+            | (b[off + 2] & 0xFFL) << 16
+            | (b[off + 3] & 0xFFL) << 24
+            | (b[off + 4] & 0xFFL) << 32
+            | (b[off + 5] & 0xFFL) << 40
+            | (b[off + 6] & 0xFFL) << 48
+            | (b[off + 7] & 0xFFL) << 56;
     }
 
     private static long readLE32(byte[] b, int off) {
         return (b[off] & 0xFFL)
-                | (b[off + 1] & 0xFFL) << 8
-                | (b[off + 2] & 0xFFL) << 16
-                | (b[off + 3] & 0xFFL) << 24;
+            | (b[off + 1] & 0xFFL) << 8
+            | (b[off + 2] & 0xFFL) << 16
+            | (b[off + 3] & 0xFFL) << 24;
     }
 
     private static void writeLE64(byte[] b, int off, long v) {
@@ -161,8 +161,8 @@ public final class XXH3 {
         long input_lo = readLE64(input, inOff);
         long input_hi = readLE64(input, inOff + 8);
         return mul128Fold64(
-                input_lo ^ (readLE64(secret, secOff) + seed),
-                input_hi ^ (readLE64(secret, secOff + 8) - seed));
+            input_lo ^ (readLE64(secret, secOff) + seed),
+            input_hi ^ (readLE64(secret, secOff + 8) - seed));
     }
 
     // ---- short inputs (0..16) ---------------------------------------------------
@@ -241,7 +241,7 @@ public final class XXH3 {
     // ---- long inputs (>240): full accumulator path ------------------------------
 
     private static final long[] INIT_ACC = {
-            PRIME32_3, PRIME64_1, PRIME64_2, PRIME64_3, PRIME64_4, PRIME32_2, PRIME64_5, PRIME32_1
+        PRIME32_3, PRIME64_1, PRIME64_2, PRIME64_3, PRIME64_4, PRIME32_2, PRIME64_5, PRIME32_1
     };
 
     private static void accumulate512(long[] acc, byte[] input, int inOff, byte[] secret, int secOff) {
