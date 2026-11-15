@@ -37,7 +37,7 @@ public final class ManglerObfuscator implements ILuaObfuscator {
 
     @Override
     public String obfuscate(String input, String path, String buildVariant) {
-        if (disabled) return input;
+        if (disabled || !"release".equals(buildVariant)) return input;
         try {
             File root = findProjectRoot(path);
             ensureInitialized(root);
