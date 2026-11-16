@@ -17,7 +17,7 @@ import java.util.Set;
  *
  * Throws IllegalArgumentException if the source is not Lua this class understands.
  */
-final class Scan {
+public final class Scan {
 
     /** A local variable. Renaming it is always safe; it is renamed only if it is ever bound to a function. */
     static final class Local {
@@ -39,7 +39,7 @@ final class Scan {
     final Map<String, Set<String>> fieldsOfGlobal = new HashMap<>();  // global -> field names read off it
     final Set<String> strings = new HashSet<>();         // contents of quoted string literals
 
-    static Scan of(String source) {
+    public static Scan of(String source) {
         Scan s = new Scan(Lexer.lex(source));
         s.block();
         if (s.current().kind() != Kind.EOF) throw s.error("unexpected symbol");

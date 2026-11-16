@@ -4,10 +4,10 @@
 
 set -eu
 cd "$(dirname "$0")"
-src=mangler/src/com/defold/mangler
+src=mangler/com/defold/mangler
 
 rm -rf .build; mkdir -p .build/classes
-javac --release 25 -Xlint:all -d .build/classes $src/Lexer.java $src/Scan.java $src/Mangler.java $src/XXH3.java test/Check.java
+javac --release 25 -Xlint:all -d .build/classes $src/*.java test/Check.java
 java -cp .build/classes com.defold.mangler.Check
 
 for dir in test/fixtures/*/; do

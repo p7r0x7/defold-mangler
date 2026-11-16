@@ -1,6 +1,8 @@
-package com.defold.mangler;
+package com.defold.extension.pipeline;
 
 import com.defold.extension.pipeline.ILuaObfuscator;
+import com.defold.mangler.Mangler;
+import com.defold.mangler.Scan;
 import com.dynamo.bob.Project;
 import com.dynamo.bob.fs.DefaultFileSystem;
 import com.dynamo.bob.util.BobProjectProperties;

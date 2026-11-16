@@ -24,7 +24,7 @@ import java.util.Set;
  *  - any other name is renamed if the project binds it to a function as a global or as a table field, unless
  *    it is excluded or could be reached by something other than a Lua identifier (see the constructor).
  */
-final class Mangler {
+public final class Mangler {
 
     private static final Set<String> BUILTIN_EXCLUDED = Set.of(
         // looked up by the engine
@@ -38,7 +38,7 @@ final class Mangler {
     private final Set<String> excluded = new HashSet<>(BUILTIN_EXCLUDED);
     private final Set<String> renamed = new HashSet<>();  // global and field names, across the whole project
 
-    Mangler(long seed, Set<String> userExcluded, Collection<Scan> project) {
+    public Mangler(long seed, Set<String> userExcluded, Collection<Scan> project) {
         this.seed = seed;
         excluded.addAll(userExcluded);
 
@@ -72,7 +72,7 @@ final class Mangler {
         return excluded.contains(name) || name.startsWith("__");  // __index, __call, ... are the VM's names
     }
 
-    String mangle(String source) {
+    public String mangle(String source) {
         Scan s = Scan.of(source);
         List<Token> hits = new ArrayList<>();
         for (Scan.Local l : s.locals) {

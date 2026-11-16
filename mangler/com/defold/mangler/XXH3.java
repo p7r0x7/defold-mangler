@@ -16,7 +16,7 @@ import java.nio.charset.StandardCharsets;
  * This class is self-contained (no native dependency) so the extension does
  * not need to ship a JNI binding into bob's plugin classpath.
  */
-public final class XXH3 {
+final class XXH3 {
 
     private XXH3() {}
 
