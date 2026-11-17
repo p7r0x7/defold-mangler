@@ -34,20 +34,17 @@ import java.util.stream.Collectors;
  * seed = 1234567890123456789   ; optional; random for every build if absent
  * exclude = name1, name2       ; names never to rename
  * </pre>
- *
- * Only the project's own Lua files are scanned and rewritten. Anything else Bob hands over (library
- * dependencies) is returned as is, so a library's API and its use of the engine are never disturbed.
  */
 public final class ManglerObfuscator implements ILuaObfuscator {
 
     private static final List<String> LUA = List.of(".lua", ".script", ".gui_script", ".render_script");
 
     private final boolean disabled;
-    private final Path root;
     private final long seed;
     private final Set<String> excluded;
 
-    private Mangler mangler;                                  // built on first use
+    private Path root;                                             // found lazily from the first real file path we see
+    private Mangler mangler;                                       // built on first use
     private final Map<Path, String> unreadable = new HashMap<>();  // project Lua files we could not parse -> why
     private final Set<Path> projectFiles = new HashSet<>();        // every project Lua file the scan saw
 
@@ -57,8 +54,6 @@ public final class ManglerObfuscator implements ILuaObfuscator {
             project.loadProjectFile();
             BobProjectProperties props = project.getProjectProperties();
             disabled = props.getBooleanValue("mangler", "disabled", false);
-            String dir = project.getRootDirectory();
-            root = Paths.get(dir == null || dir.isEmpty() ? "." : dir).toAbsolutePath().normalize();
             String s = props.getStringValue("mangler", "seed", "").trim();
             seed = s.isEmpty() ? new SecureRandom().nextLong() : Long.parseUnsignedLong(s);
             excluded = Arrays.stream(props.getStringValue("mangler", "exclude", "").split(","))
@@ -70,8 +65,7 @@ public final class ManglerObfuscator implements ILuaObfuscator {
 
     @Override
     public String obfuscate(String input, String path, String buildVariant) throws IOException {
-        if (disabled || !"release".equals(buildVariant)) return input;
-        Mangler m = mangler();
+        if (disabled) return input;
         Path file = locate(path);
         if (file == null) return input;
         String problem = unreadable.get(file);
@@ -80,7 +74,20 @@ public final class ManglerObfuscator implements ILuaObfuscator {
                 "mangler cannot read " + file + " (" + problem + "); fix it, or set disabled = 1 under [mangler] in game.project"
             );
         }
-        return m.mangle(input);
+        return mangler().mangle(input);
+    }
+
+    private Path getProjectRoot(Path file) {
+        if (root != null) return root;
+        Path current = file.getParent();
+        while (current != null) {
+            if (Files.exists(current.resolve("game.project"))) {
+                root = current;
+                return root;
+            }
+            current = current.getParent();
+        }
+        return null;
     }
 
     /** Scans the whole project once, on first use, so that every file is renamed against the same facts. */
@@ -91,7 +98,7 @@ public final class ManglerObfuscator implements ILuaObfuscator {
             try {
                 scans.put(file, Scan.of(new String(Files.readAllBytes(file), StandardCharsets.UTF_8)));
             } catch (IllegalArgumentException e) {
-                unreadable.put(file, e.getMessage());  // only a problem if it turns out to be part of the build
+                unreadable.put(file, e.getMessage());
             }
         }
         scans.keySet().forEach(unreadable::remove);
@@ -101,13 +108,12 @@ public final class ManglerObfuscator implements ILuaObfuscator {
         return mangler;
     }
 
-    /** Bob names project files like "/main/main.script", relative to the project root. */
-    private Path locate(String path) {
-        for (Path p : new Path[]{root.resolve(path.startsWith("/") ? path.substring(1) : path), Paths.get(path)}) {
-            p = p.toAbsolutePath().normalize();
-            if (projectFiles.contains(p)) return p;
-        }
-        return null;
+    private Path locate(String path) throws IOException {
+        Path p = Paths.get(path).toRealPath();
+        Path projectRoot = getProjectRoot(p);
+        if (projectRoot == null) return null;
+        if (mangler == null) mangler();
+        return projectFiles.contains(p) ? p : null;
     }
 
     private List<Path> luaFiles() throws IOException {

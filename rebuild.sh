@@ -8,6 +8,6 @@ set -eu; jar=mangler/plugins/share/pluginMangler.jar
 
 rm -rf .build; mkdir -p .build ${jar%/*}
 
-javac --release 25 -cp bob.jar -d .build $(find mangler/com/defold -name '*.java')
+javac --release 25 -cp bob.jar -d .build $(find mangler -name '*.java')
 
 jar cf $jar -C .build .; rm -rf .build bob.jar
