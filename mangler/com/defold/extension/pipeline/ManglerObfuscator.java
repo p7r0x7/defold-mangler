@@ -6,12 +6,12 @@ import com.dynamo.bob.Project;
 import com.dynamo.bob.fs.DefaultFileSystem;
 import com.dynamo.bob.util.BobProjectProperties;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.security.SecureRandom;
@@ -37,14 +37,14 @@ public final class ManglerObfuscator implements ILuaObfuscator {
 
     private static final List<String> LUA = List.of(".lua", ".script", ".gui_script", ".render_script");
 
-    private final boolean disabled;
+    private boolean disabled = false;
     private final long seed;
     private final Set<String> excluded;
 
-    private Path root;
+    private File projectRoot = null;
     private Mangler mangler;
-    private final Map<Path, String> unreadable = new HashMap<>();
-    private final Set<Path> projectFiles = new HashSet<>();
+    private final Map<File, String> unreadable = new HashMap<>();
+    private final Set<File> projectFiles = new HashSet<>();
     private final Map<Object, Scan> scans = new HashMap<>();
 
     public ManglerObfuscator() throws InstantiationException {
@@ -58,16 +58,24 @@ public final class ManglerObfuscator implements ILuaObfuscator {
             excluded = Arrays.stream(props.getStringValue("mangler", "exclude", "").split(","))
                     .map(String::trim).filter(n -> !n.isEmpty()).collect(Collectors.toSet());
         } catch (Exception e) {
-            throw new InstantiationException("mangler: " + e);
+            throw new InstantiationException(e.getMessage());
         }
     }
 
     @Override
-    public synchronized String obfuscate(String input, String path, String buildVariant) throws IOException {
-        if (disabled || getProjectRoot(path) == null) return input;
-        ensureBaseline();
+    public synchronized String obfuscate(String input, String path, String buildVariant) throws Exception {
+        if (disabled) {
+            return input;
+        }
 
-        Path file = locate(path);
+        File root = getProjectRoot(path);
+        if (root == null) {
+            throw new Exception("Unable to find project root for " + path);
+        }
+
+        ensureBaseline(root);
+
+        File file = locate(path);
         if (file != null) {
             String problem = unreadable.get(file);
             if (problem != null) {
@@ -91,54 +99,59 @@ public final class ManglerObfuscator implements ILuaObfuscator {
         return mangler.mangle(input);
     }
 
-    private Path getProjectRoot(String path) {
-        if (root != null) return root;
-        Path current = Paths.get(path).toAbsolutePath().getParent();
-        while (current != null) {
-            if (Files.exists(current.resolve("game.project"))) {
-                root = current;
-                return root;
-            }
-            current = current.getParent();
+    private File getProjectRoot(String path) {
+        if (projectRoot != null) {
+            return projectRoot;
         }
-        return null;
+        File current = new File(path).getParentFile();
+        while (current != null) {
+            File gameProject = new File(current, "game.project");
+            if (gameProject.exists()) {
+                projectRoot = current;
+                break;
+            }
+            current = current.getParentFile();
+        }
+        return projectRoot;
     }
 
-    private void ensureBaseline() throws IOException {
+    private void ensureBaseline(File root) throws IOException {
         if (mangler != null) return;
-        for (Path file : luaFiles()) {
+        for (File file : luaFiles(root)) {
             projectFiles.add(file);
             try {
-                scans.put(file, Scan.of(Files.readString(file, StandardCharsets.UTF_8)));
+                scans.put(file, Scan.of(Files.readString(file.toPath(), StandardCharsets.UTF_8)));
             } catch (IllegalArgumentException e) {
                 unreadable.put(file, e.getMessage());
             }
         }
+        projectFiles.addAll(unreadable.keySet());
         mangler = new Mangler(seed, excluded, scans.values());
     }
 
-    private Path locate(String path) {
+    private File locate(String path) {
         try {
-            Path p = Paths.get(path).toRealPath();
-            return projectFiles.contains(p) ? p : null;
+            File f = new File(path).getCanonicalFile();
+            return projectFiles.contains(f) ? f : null;
         } catch (IOException e) {
             return null;
         }
     }
 
-    private List<Path> luaFiles() throws IOException {
-        List<Path> out = new ArrayList<>();
-        Files.walkFileTree(root, new SimpleFileVisitor<>() {
+    private List<File> luaFiles(File root) throws IOException {
+        List<File> out = new ArrayList<>();
+        Files.walkFileTree(root.toPath(), new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                boolean skip = !dir.equals(root) && dir.getFileName().toString().equals("build");
+                String n = dir.getFileName().toString();
+                boolean skip = !dir.equals(root.toPath()) && n.equals("build");
                 return skip ? FileVisitResult.SKIP_SUBTREE : FileVisitResult.CONTINUE;
             }
 
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
                 String n = file.getFileName().toString();
-                if (LUA.stream().anyMatch(n::endsWith)) out.add(file);
+                if (LUA.stream().anyMatch(n::endsWith)) out.add(file.toFile());
                 return FileVisitResult.CONTINUE;
             }
         });
