@@ -1,6 +1,5 @@
 package com.defold.extension.pipeline;
 
-import com.defold.extension.pipeline.ILuaObfuscator;
 import com.defold.mangler.Mangler;
 import com.defold.mangler.Scan;
 import com.dynamo.bob.Project;
@@ -27,7 +26,6 @@ import java.util.stream.Collectors;
 
 /**
  * Hooks {@link Mangler} into Bob's Lua pipeline. Settings live in game.project:
- *
  * <pre>
  * [mangler]
  * disabled = 0                 ; 1 turns the plugin off
@@ -43,10 +41,11 @@ public final class ManglerObfuscator implements ILuaObfuscator {
     private final long seed;
     private final Set<String> excluded;
 
-    private Path root;                                             // found lazily from the first real file path we see
-    private Mangler mangler;                                       // built on first use
-    private final Map<Path, String> unreadable = new HashMap<>();  // project Lua files we could not parse -> why
-    private final Set<Path> projectFiles = new HashSet<>();        // every project Lua file the scan saw
+    private Path root;
+    private Mangler mangler;
+    private final Map<Path, String> unreadable = new HashMap<>();
+    private final Set<Path> projectFiles = new HashSet<>();
+    private final Map<Object, Scan> scans = new HashMap<>();
 
     public ManglerObfuscator() throws InstantiationException {
         try {
@@ -64,22 +63,37 @@ public final class ManglerObfuscator implements ILuaObfuscator {
     }
 
     @Override
-    public String obfuscate(String input, String path, String buildVariant) throws IOException {
-        if (disabled) return input;
+    public synchronized String obfuscate(String input, String path, String buildVariant) throws IOException {
+        if (disabled || getProjectRoot(path) == null) return input;
+        ensureBaseline();
+
         Path file = locate(path);
-        if (file == null) return input;
-        String problem = unreadable.get(file);
-        if (problem != null) {
-            throw new IOException(
-                "mangler cannot read " + file + " (" + problem + "); fix it, or set disabled = 1 under [mangler] in game.project"
-            );
+        if (file != null) {
+            String problem = unreadable.get(file);
+            if (problem != null) {
+                throw new IOException(
+                    "mangler cannot read " + file + " (" + problem + "); fix it, or set disabled = 1 under [mangler] in game.project"
+                );
+            }
         }
-        return mangler().mangle(input);
+
+        Object key = file != null ? file : path;
+        if (!scans.containsKey(key)) {
+            try {
+                scans.put(key, Scan.of(input));
+            } catch (IllegalArgumentException e) {
+                throw new IOException(
+                    "mangler cannot read " + path + " (" + e.getMessage() + "); fix it, or set disabled = 1 under [mangler] in game.project"
+                );
+            }
+            mangler = new Mangler(seed, excluded, scans.values());
+        }
+        return mangler.mangle(input);
     }
 
-    private Path getProjectRoot(Path file) {
+    private Path getProjectRoot(String path) {
         if (root != null) return root;
-        Path current = file.getParent();
+        Path current = Paths.get(path).toAbsolutePath().getParent();
         while (current != null) {
             if (Files.exists(current.resolve("game.project"))) {
                 root = current;
@@ -90,30 +104,26 @@ public final class ManglerObfuscator implements ILuaObfuscator {
         return null;
     }
 
-    /** Scans the whole project once, on first use, so that every file is renamed against the same facts. */
-    private synchronized Mangler mangler() throws IOException {
-        if (mangler != null) return mangler;
-        Map<Path, Scan> scans = new HashMap<>();
+    private void ensureBaseline() throws IOException {
+        if (mangler != null) return;
         for (Path file : luaFiles()) {
+            projectFiles.add(file);
             try {
-                scans.put(file, Scan.of(new String(Files.readAllBytes(file), StandardCharsets.UTF_8)));
+                scans.put(file, Scan.of(Files.readString(file, StandardCharsets.UTF_8)));
             } catch (IllegalArgumentException e) {
                 unreadable.put(file, e.getMessage());
             }
         }
-        scans.keySet().forEach(unreadable::remove);
         mangler = new Mangler(seed, excluded, scans.values());
-        projectFiles.addAll(scans.keySet());
-        projectFiles.addAll(unreadable.keySet());
-        return mangler;
     }
 
-    private Path locate(String path) throws IOException {
-        Path p = Paths.get(path).toRealPath();
-        Path projectRoot = getProjectRoot(p);
-        if (projectRoot == null) return null;
-        if (mangler == null) mangler();
-        return projectFiles.contains(p) ? p : null;
+    private Path locate(String path) {
+        try {
+            Path p = Paths.get(path).toRealPath();
+            return projectFiles.contains(p) ? p : null;
+        } catch (IOException e) {
+            return null;
+        }
     }
 
     private List<Path> luaFiles() throws IOException {
@@ -121,8 +131,7 @@ public final class ManglerObfuscator implements ILuaObfuscator {
         Files.walkFileTree(root, new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                String n = dir.getFileName().toString();
-                boolean skip = !dir.equals(root) && n.equals("build");
+                boolean skip = !dir.equals(root) && dir.getFileName().toString().equals("build");
                 return skip ? FileVisitResult.SKIP_SUBTREE : FileVisitResult.CONTINUE;
             }
 
