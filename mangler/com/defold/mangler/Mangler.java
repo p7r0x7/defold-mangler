@@ -10,7 +10,7 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Replaces function names with `_<XXH3 of the name, keyed by the seed>`.
+ * Replaces every project-defined identifier with `_<base32 of the name's XXH3, keyed by the seed>`.
  *
  * The new name depends only on the old name, so the same name is renamed the same way in every file. That is
  * what lets one file call a function another file defines, and it is also why no collision handling is needed:
@@ -18,64 +18,84 @@ import java.util.Set;
  *
  * Which names are renamed is decided once for the whole project:
  *
- *  - a local variable is renamed if it is ever bound to a function (decided per variable, by scope);
- *  - any other name is renamed if the project binds it to a function as a global or as a table field, unless
- *    it is excluded or could be reached by something other than a Lua identifier (see the constructor).
+ *  - a local variable is always renamed (it is scope-resolved, so it can never be reached from outside);
+ *  - a global is renamed if the project assigns it somewhere;
+ *  - a field is renamed if the project assigns it somewhere, and only at sites where the chain is rooted in a
+ *    project-owned global or in a local/literal. Field accesses on a global the project never assigns are
+ *    looked up by the engine, not by Lua (`go.delete`, `_G.name`, `socket.http.request`,
+ *    `rand.ffi_ptrs().entropy`), so those tokens are left alone individually rather than pinning the field
+ *    name across the whole project;
+ *  - a name that also appears as a table-key string literal (`t["name"]`, `{["name"] = ...}`) is left alone,
+ *    because it could be reached from Lua without an identifier in sight. Non-key strings (arguments,
+ *    `require` paths, log messages) do not pin anything.
  *
- * Field accesses on a global the project does not define are looked up by the engine, not by Lua
- * (`go.delete`, `_G.name`, `socket.http.request`, `rand.ffi_ptrs().entropy`), so those tokens are left
- * alone individually rather than pinning the field name across the whole project.
+ * Defold gives every project the shared state, so a global assigned in one script is visible in every other
+ * one. There is no per-file environment that could mask an engine global, and renaming is therefore transparent
+ * as long as it is uniform: `pinned = used - definedGlobals` correctly captures "the engine owns this name"
+ * because the project never assigns it anywhere. Once the project does assign a name, it owns it everywhere.
+ *
+ * Defold lifecycle callbacks and Lua string/file method names are the two exceptions. The engine looks callbacks
+ * up by name on the script table, and the string/file metatables dispatch methods by name; neither can find
+ * `_a1b2c3` where it expects `init` or `format`. They are excluded unconditionally.
  */
 public final class Mangler {
 
-    private static final Set<String> BUILTIN_EXCLUDED = Set.of(
-        // looked up by the engine
+    private static final Set<String> ALWAYS_EXCLUDED = Set.of(
+        // Defold lifecycle callbacks
         "init", "final", "update", "fixed_update", "on_message", "on_input", "on_reload",
-        // methods of strings and files, which are called as `s:format()` with no global in sight
-        "byte", "char", "dump", "find", "format", "gmatch", "gsub", "len", "lower", "match", "rep",
-        "reverse", "sub", "upper", "close", "flush", "lines", "read", "seek", "setvbuf", "write"
+        "on_window_resize", "on_window_focus",
+        // Lua string methods
+        "byte", "char", "dump", "find", "format", "gmatch", "gsub", "len", "lower", "match",
+        "rep", "reverse", "sub", "upper", "gfind",
+        // Lua file-handle methods
+        "close", "flush", "lines", "read", "seek", "setvbuf", "write"
     );
 
     private final long seed;
-    private final Set<String> excluded = new HashSet<>(BUILTIN_EXCLUDED);
-    private final Set<String> defined;  // globals the project assigns to, across the whole project
-    private final Set<String> renamed = new HashSet<>();  // global and field names, across the whole project
+    private final Set<String> userExcluded = new HashSet<>();
+    private final Set<String> definedGlobals;  // globals the project assigns to, project-wide
+    private final Set<String> renamed = new HashSet<>();  // globals and fields to rename, project-wide
 
     public Mangler(long seed, Set<String> userExcluded, Collection<Scan> project) {
         this.seed = seed;
-        excluded.addAll(userExcluded);
+        this.userExcluded.addAll(userExcluded);
 
-        Set<String> fns = new HashSet<>(), definedGlobals = new HashSet<>(), used = new HashSet<>(), strings = new HashSet<>();
+        Set<String> defined = new HashSet<>(), used = new HashSet<>(), strings = new HashSet<>();
+        Set<String> globals = new HashSet<>();
         for (Scan s : project) {
-            fns.addAll(s.definedFns);
-            definedGlobals.addAll(s.definedGlobals);
+            defined.addAll(s.definedGlobals);
+            defined.addAll(s.definedFields);
+            globals.addAll(s.definedGlobals);
             strings.addAll(s.strings);
             for (Token t : s.globalRefs) used.add(t.text());
         }
-        this.defined = definedGlobals;
+        this.definedGlobals = globals;
 
-        // Names that something other than a Lua identifier may rely on stay as they are:
-        //  - a global the project reads but never assigns belongs to the engine (`print`, `hash`, `go`);
-        //  - a name that is also a whole string literal may be looked up as a string (`t["name"]`, `_G["name"]`).
-        // Field accesses on those engine globals are handled per token in mangle(); see Scan.FieldRef.
+        // A global the project reads but never assigns belongs to the engine (`print`, `hash`, `go`); a name
+        // that is also a table-key string literal may be looked up as a string (`t["name"]`).
         Set<String> pinned = new HashSet<>(used);
-        pinned.removeAll(definedGlobals);
+        pinned.removeAll(globals);
         pinned.addAll(strings);
 
-        for (String name : fns) {
-            if (!pinned.contains(name) && !isProtected(name)) renamed.add(name);
+        for (String name : defined) {
+            if (!pinned.contains(name) && !isProtectedName(name)) renamed.add(name);
         }
     }
 
-    private boolean isProtected(String name) {
-        return excluded.contains(name) || name.startsWith("__");  // __index, __call, ... are the VM's names
+    private boolean isProtectedName(String name) {
+        return ALWAYS_EXCLUDED.contains(name) || userExcluded.contains(name) || name.startsWith("__");
+    }
+
+    /** A local shadows nothing the engine or a metatable looks up, so only user exclusions and VM names apply. */
+    private boolean isProtectedLocal(String name) {
+        return userExcluded.contains(name) || name.startsWith("__");
     }
 
     public String mangle(String source) {
         Scan s = Scan.of(source);
         List<Token> hits = new ArrayList<>();
         for (Scan.Local l : s.locals) {
-            if (l.fn && !isProtected(l.name)) hits.addAll(l.uses);
+            if (!isProtectedLocal(l.name)) hits.addAll(l.uses);
         }
         for (Token t : s.globalRefs) {
             if (renamed.contains(t.text())) hits.add(t);
@@ -88,7 +108,9 @@ public final class Mangler {
         StringBuilder out = new StringBuilder(source.length());
         int at = 0;
         for (Token t : hits) {
-            out.append(source, at, t.start()).append('_').append(Long.toHexString(XXH3.hash64(t.text(), seed)));
+            out.append(source, at, t.start())
+               .append('_')
+               .append(base32(XXH3.hash64(t.text(), seed)));
             at = t.end();
         }
         return out.append(source, at, source.length()).toString();
@@ -100,6 +122,16 @@ public final class Mangler {
      * is an engine table whose keys must stay as written.
      */
     private boolean isProjectField(Scan.FieldRef f) {
-        return f.root() == null || defined.contains(f.root());
+        return f.root() == null || definedGlobals.contains(f.root());
+    }
+
+    private static String base32(long value) {
+        char[] alphabet = "abcdefghijklmnopqrstuvwxyz234567".toCharArray();
+        char[] result = new char[13];
+        for (int i = 12; i >= 0; i--) {
+            result[i] = alphabet[(int) (value & 31)];
+            value >>>= 5;
+        }
+        return new String(result);
     }
 }

@@ -1,28 +1,52 @@
 #!/bin/sh
 
-# Needs JDK >= 25 and luajit
+# Needs JDK >= 25 and luajit.
 
 set -eu
 cd "$(dirname "$0")"
 src=mangler/com/defold/mangler
+cp=".build/classes"
 
-rm -rf .build; mkdir -p .build/classes
-javac --release 25 -Xlint:all -d .build/classes $src/*.java test/Check.java
-java -cp .build/classes com.defold.mangler.Check
+rm -rf .build; mkdir -p "$cp"
+javac --release 25 -Xlint:all -d "$cp" $src/*.java test/Check.java
 
+java -cp "$cp" com.defold.mangler.Check
+
+status=0
 for dir in test/fixtures/*/; do
     name=$(basename "$dir")
-    java -cp .build/classes com.defold.mangler.Check "$dir" ".build/$name"
+
+    excludes=""
+    [ -f "$dir/exclude.txt" ] && excludes="$dir/exclude.txt"
+
+    # 1. mangle
+    out=".build/$name"
+    java -cp "$cp" com.defold.mangler.Check mangle "$dir" "$out" "$excludes"
+
+    # 2. lexer-based kept/gone verification
+    kept=""; gone=""
+    [ -f "$dir/kept.txt" ] && kept="$dir/kept.txt"
+    [ -f "$dir/gone.txt" ] && gone="$dir/gone.txt"
+    java -cp "$cp" com.defold.mangler.Check verify "$out" "$kept" "$gone"
+
+    # 3. runtime equivalence
     (cd "$dir" && luajit main.lua) > ".build/$name.expected"
-    (cd ".build/$name" && luajit main.lua) > ".build/$name.actual"
-    diff ".build/$name.expected" ".build/$name.actual"
-    for n in $(cat "$dir/gone.txt"); do
-        if cat ".build/$name"/*.lua | grep -v KEEP | grep -qw -- "$n"; then echo "$name: '$n' was not renamed"; exit 1; fi
-    done
-    for n in $(cat "$dir/kept.txt"); do
-        if ! cat ".build/$name"/*.lua | grep -qw -- "$n"; then echo "$name: '$n' should have been left alone"; exit 1; fi
-    done
+    (cd "$out" && luajit main.lua) > ".build/$name.actual"
+    if ! diff -u ".build/$name.expected" ".build/$name.actual"; then
+        echo "FAIL $name: runtime output differs" >&2
+        status=1; continue
+    fi
+
+    # 4. determinism: two independent manglings must be byte-identical
+    out2=".build/$name.again"
+    java -cp "$cp" com.defold.mangler.Check mangle "$dir" "$out2" "$excludes"
+    if ! diff -rq "$out" "$out2" >/dev/null; then
+        echo "FAIL $name: mangling is not deterministic" >&2
+        status=1; continue
+    fi
+
     echo "$name: ok"
 done
 
 rm -rf .build
+exit $status

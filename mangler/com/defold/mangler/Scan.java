@@ -19,10 +19,9 @@ import java.util.Set;
  */
 public final class Scan {
 
-    /** A local variable. Renaming it is always safe; it is renamed only if it is ever bound to a function. */
+    /** A local variable. Renaming it is always safe; every declaration and reference is tracked by scope. */
     static final class Local {
         final String name;
-        boolean fn;
         String root;  // the global this local is an alias of (`local go = go`), if any
         final List<Token> uses = new ArrayList<>();  // the declaration and every reference
 
@@ -44,8 +43,8 @@ public final class Scan {
     final List<Token> globalRefs = new ArrayList<>();    // variables that resolve to a global
     final List<FieldRef> fieldRefs = new ArrayList<>();  // x.name  x:name  { name = ... }  function x.name()
     final Set<String> definedGlobals = new HashSet<>();  // globals this file assigns to
-    final Set<String> definedFns = new HashSet<>();      // global and field names this file binds to a function
-    final Set<String> strings = new HashSet<>();         // contents of quoted string literals
+    final Set<String> definedFields = new HashSet<>();   // field names this file assigns to
+    final Set<String> strings = new HashSet<>();         // contents of table-key string literals
 
     public static Scan of(String source) {
         Scan s = new Scan(Lexer.lex(source));
@@ -54,10 +53,9 @@ public final class Scan {
         return s;
     }
 
-    // What an expression turned out to be: a bare function literal, and/or a plain `global.a.b` chain.
-    private record Ex(boolean fn, String root) {
-        static final Ex OTHER = new Ex(false, null);
-        static final Ex FN = new Ex(true, null);
+    // What an expression turned out to be: the global that a lone `global.a.b` chain was rooted in.
+    private record Ex(String root) {
+        static final Ex OTHER = new Ex(null);
     }
 
     // The tail of a suffixed expression (`a`, `a.b`, `f().c`), which is what assignments need to know.
@@ -81,10 +79,6 @@ public final class Scan {
 
     private Scan(List<Token> toks) {
         this.toks = toks;
-        for (Token t : toks) {
-            String x = t.text();
-            if (t.kind() == Kind.STRING && (x.startsWith("\"") || x.startsWith("'"))) strings.add(x.substring(1, x.length() - 1));
-        }
     }
 
     // ---- token helpers ------------------------------------------------------------------------------------
@@ -148,6 +142,13 @@ public final class Scan {
 
     private void field(Token t, String root) {
         fieldRefs.add(new FieldRef(t, root));
+    }
+
+    /** If {@code t} is a quoted string literal, its contents are a string that could name a table key. */
+    private void trackKeyString(Token t) {
+        if (t.kind() != Kind.STRING) return;
+        String x = t.text();
+        if (x.startsWith("\"") || x.startsWith("'")) strings.add(x.substring(1, x.length() - 1));
     }
 
     // ---- statements ---------------------------------------------------------------------------------------
@@ -250,19 +251,16 @@ public final class Scan {
             field(last, root);
         }
         if (last != null) {
-            definedFns.add(last.text());
-        } else if (local != null) {
-            local.fn = true;
-        } else {
+            definedFields.add(last.text());
+        } else if (local == null) {
             definedGlobals.add(head.text());
-            definedFns.add(head.text());
         }
         body(method);
     }
 
     private void localStat() {
         if (accept("function")) {
-            declare(name()).fn = true;  // declared first, so the body can recurse
+            declare(name());  // declared first, so the body can recurse
             body(false);
             return;
         }
@@ -272,10 +270,7 @@ public final class Scan {
         List<Ex> values = accept("=") ? exprList() : List.of();  // evaluated before the names come into scope
         for (int i = 0; i < names.size(); i++) {
             Local l = declare(names.get(i));
-            if (i < values.size()) {
-                l.fn = values.get(i).fn();
-                l.root = values.get(i).root();
-            }
+            if (i < values.size()) l.root = values.get(i).root();
         }
     }
 
@@ -287,16 +282,13 @@ public final class Scan {
         List<Ex> values = exprList();
         for (int i = 0; i < targets.size(); i++) {
             Chain t = targets.get(i);
-            boolean fn = i < values.size() && values.get(i).fn();
             if (t.var() != null && t.local() != null) {
-                if (fn) t.local().fn = true;
                 // A later assignment may be the first one to reveal what the local really is.
                 if (i < values.size() && t.local().root == null) t.local().root = values.get(i).root();
             } else if (t.var() != null) {
                 definedGlobals.add(t.var().text());
-                if (fn) definedFns.add(t.var().text());
-            } else if (t.field() != null && fn) {
-                definedFns.add(t.field().text());
+            } else if (t.field() != null) {
+                definedFields.add(t.field().text());
             }
         }
     }
@@ -333,10 +325,10 @@ public final class Scan {
             pos++;
             return Ex.OTHER;
         }
-        if (k == Kind.NAME || is("(")) return new Ex(false, suffixed().root());
+        if (k == Kind.NAME || is("(")) return new Ex(suffixed().root());
         if (accept("function")) {
             body(false);
-            return Ex.FN;
+            return Ex.OTHER;
         }
         if (is("{")) {
             table();
@@ -373,6 +365,7 @@ public final class Scan {
                 args();
                 if ("require".equals(root)) root = null;  // require("x"):x() yields a project module
             } else if (accept("[")) {
+                trackKeyString(current());  // `t["name"]` pins `name`, since `t.name` may rename it
                 expr();
                 expect("]");
                 var = null; local = null; member = null;
@@ -406,6 +399,7 @@ public final class Scan {
         expect("{");
         while (!is("}")) {
             if (accept("[")) {
+                trackKeyString(current());  // `{["name"] = ...}` pins `name`
                 expr();
                 expect("]");
                 expect("=");
@@ -414,7 +408,8 @@ public final class Scan {
                 Token key = name();
                 pos++;
                 field(key, null);
-                if (expr().fn()) definedFns.add(key.text());
+                definedFields.add(key.text());
+                expr();
             } else {
                 expr();
             }
