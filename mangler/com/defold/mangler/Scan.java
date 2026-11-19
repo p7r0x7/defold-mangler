@@ -20,10 +20,22 @@ import java.util.Set;
  */
 public final class Scan {
 
+    /**
+     * Internal root marker for values supplied by the engine to a Defold lifecycle callback.
+     * It is deliberately distinct from null, which means a project-owned local/literal/expression.
+     */
+    static final String EXTERNAL_ROOT = "<external>";
+
+    /** Defold callback names whose parameters are supplied by the engine. */
+    static final Set<String> CALLBACKS = Set.of(
+        "init", "final", "update", "fixed_update", "on_message", "on_input", "on_reload",
+        "on_window_resize", "on_window_focus"
+    );
+
     /** A local variable. Every declaration and reference is tracked by scope, so renaming it is always safe. */
     static final class Local {
         final String name;
-        String root;  // global this local aliases (`local go = go`), if any
+        String root;  // global alias, or EXTERNAL_ROOT for an engine-supplied callback parameter
         final List<Token> uses = new ArrayList<>();  // the declaration and every reference
 
         Local(String name) {
@@ -33,8 +45,9 @@ public final class Scan {
 
     /**
      * A field access: `x.name`, `x:name`, `{ name = ... }`, `function x.name()`. {@code root} is the global
-     * the chain hangs off (`rand` in `rand.ffi_ptrs().entropy`), or null when the chain starts from a local, a
-     * literal or an expression. The mangler skips a field whose root is a global the project never assigns,
+     * the chain hangs off (`rand` in `rand.ffi_ptrs().entropy`), null when the chain starts from a project local,
+     * literal or expression, or EXTERNAL_ROOT when it starts from a callback parameter. The mangler skips a
+     * field whose root is a global the project never assigns,
      * because such a name is looked up by the engine, not by Lua (`go.delete`, `socket.http.request`).
      */
     record FieldRef(Token token, String root) {}
@@ -257,13 +270,16 @@ public final class Scan {
         } else if (local == null) {
             definedGlobals.add(head.text());
         }
-        body(method);
+        // Lifecycle callback parameters are supplied by Defold, not created by this project.
+        // Fields reached through them (e.g. action.x in on_input) must therefore remain external.
+        boolean callback = local == null && last == null && CALLBACKS.contains(head.text());
+        body(method, callback);
     }
 
     private void localStat() {
         if (accept("function")) {
             declare(name());  // declared before the body, so the function can recurse
-            body(false);
+            body(false, false);
             return;
         }
         List<Token> names = new ArrayList<>();
@@ -286,7 +302,9 @@ public final class Scan {
             Chain t = targets.get(i);
             if (t.var() != null && t.local() != null) {
                 // A later assignment may be the first one to reveal what the local really is.
-                if (i < values.size() && t.local().root == null) t.local().root = values.get(i).root();
+                if (i < values.size() && (t.local().root == null || EXTERNAL_ROOT.equals(t.local().root))) {
+                    t.local().root = values.get(i).root();
+                }
             } else if (t.var() != null) {
                 definedGlobals.add(t.var().text());
             } else if (t.field() != null) {
@@ -329,7 +347,7 @@ public final class Scan {
         }
         if (k == Kind.NAME || is("(")) return new Ex(suffixed().root());
         if (accept("function")) {
-            body(false);
+            body(false, false);
             return Ex.OTHER;
         }
         if (is("{")) {
@@ -420,13 +438,16 @@ public final class Scan {
         expect("}");
     }
 
-    private void body(boolean method) {
+    private void body(boolean method, boolean externalParameters) {
         expect("(");
         scope = new Scope(scope);
         if (method) scope.vars.put("self", new Local("self"));  // implicit parameter; nothing to rename
         if (!is(")")) {
             do {
-                if (!accept("...")) declare(name());
+                if (!accept("...")) {
+                    Local parameter = declare(name());
+                    if (externalParameters) parameter.root = EXTERNAL_ROOT;
+                }
             } while (accept(","));
         }
         expect(")");

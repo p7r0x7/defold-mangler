@@ -41,9 +41,6 @@ import java.util.Set;
 public final class Mangler {
 
     private static final Set<String> ALWAYS_EXCLUDED = Set.of(
-        // Defold lifecycle callbacks
-        "init", "final", "update", "fixed_update", "on_message", "on_input", "on_reload",
-        "on_window_resize", "on_window_focus",
         // Lua string methods
         "byte", "char", "dump", "find", "format", "gmatch", "gsub", "len", "lower", "match",
         "rep", "reverse", "sub", "upper", "gfind",
@@ -83,7 +80,8 @@ public final class Mangler {
     }
 
     private boolean isProtectedName(String name) {
-        return ALWAYS_EXCLUDED.contains(name) || userExcluded.contains(name) || name.startsWith("__");
+        return Scan.CALLBACKS.contains(name) || ALWAYS_EXCLUDED.contains(name) ||
+            userExcluded.contains(name) || name.startsWith("__");
     }
 
     /** A local shadows nothing the engine or a metatable looks up, so only user exclusions and VM names apply. */
@@ -117,12 +115,14 @@ public final class Mangler {
     }
 
     /**
-     * A field may be renamed only if its chain is rooted in a global the project owns. A null root means the
-     * chain starts from a local or a literal, which the project also owns; a root the project never assigns
-     * is an engine table whose keys must stay as written.
+     * A field may be renamed only if its chain is rooted in a project-owned value. A null root means the
+     * chain starts from a project local/literal/expression. EXTERNAL_ROOT marks a parameter supplied by a
+     * Defold lifecycle callback; its fields belong to the engine API and must stay as written. A named root
+     * is a global, and is project-owned only when this project assigns that global.
      */
     private boolean isProjectField(Scan.FieldRef f) {
-        return f.root() == null || definedGlobals.contains(f.root());
+        return f.root() == null ||
+            (!Scan.EXTERNAL_ROOT.equals(f.root()) && definedGlobals.contains(f.root()));
     }
 
     private static final String BASE32_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
