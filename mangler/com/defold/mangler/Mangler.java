@@ -5,10 +5,8 @@ import com.defold.mangler.Lexer.Token;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 /**
@@ -23,6 +21,10 @@ import java.util.Set;
  *  - a local variable is renamed if it is ever bound to a function (decided per variable, by scope);
  *  - any other name is renamed if the project binds it to a function as a global or as a table field, unless
  *    it is excluded or could be reached by something other than a Lua identifier (see the constructor).
+ *
+ * Field accesses on a global the project does not define are looked up by the engine, not by Lua
+ * (`go.delete`, `_G.name`, `socket.http.request`, `rand.ffi_ptrs().entropy`), so those tokens are left
+ * alone individually rather than pinning the field name across the whole project.
  */
 public final class Mangler {
 
@@ -36,32 +38,29 @@ public final class Mangler {
 
     private final long seed;
     private final Set<String> excluded = new HashSet<>(BUILTIN_EXCLUDED);
+    private final Set<String> defined;  // globals the project assigns to, across the whole project
     private final Set<String> renamed = new HashSet<>();  // global and field names, across the whole project
 
     public Mangler(long seed, Set<String> userExcluded, Collection<Scan> project) {
         this.seed = seed;
         excluded.addAll(userExcluded);
 
-        Set<String> fns = new HashSet<>(), defined = new HashSet<>(), used = new HashSet<>(), strings = new HashSet<>();
-        Map<String, Set<String>> fieldsOf = new HashMap<>();
+        Set<String> fns = new HashSet<>(), definedGlobals = new HashSet<>(), used = new HashSet<>(), strings = new HashSet<>();
         for (Scan s : project) {
             fns.addAll(s.definedFns);
-            defined.addAll(s.definedGlobals);
+            definedGlobals.addAll(s.definedGlobals);
             strings.addAll(s.strings);
             for (Token t : s.globalRefs) used.add(t.text());
-            s.fieldsOfGlobal.forEach((g, names) -> fieldsOf.computeIfAbsent(g, k -> new HashSet<>()).addAll(names));
         }
+        this.defined = definedGlobals;
 
         // Names that something other than a Lua identifier may rely on stay as they are:
-        //  - a global the project reads but never assigns belongs to the engine (`print`, `hash`, `go`), and so
-        //    do the fields read off it (`go.delete`, `_G.name`, `socket.http.request`);
+        //  - a global the project reads but never assigns belongs to the engine (`print`, `hash`, `go`);
         //  - a name that is also a whole string literal may be looked up as a string (`t["name"]`, `_G["name"]`).
+        // Field accesses on those engine globals are handled per token in mangle(); see Scan.FieldRef.
         Set<String> pinned = new HashSet<>(used);
-        pinned.removeAll(defined);
+        pinned.removeAll(definedGlobals);
         pinned.addAll(strings);
-        fieldsOf.forEach((g, names) -> {
-            if (!defined.contains(g)) pinned.addAll(names);
-        });
 
         for (String name : fns) {
             if (!pinned.contains(name) && !isProtected(name)) renamed.add(name);
@@ -81,8 +80,8 @@ public final class Mangler {
         for (Token t : s.globalRefs) {
             if (renamed.contains(t.text())) hits.add(t);
         }
-        for (Token t : s.fieldRefs) {
-            if (renamed.contains(t.text())) hits.add(t);
+        for (Scan.FieldRef f : s.fieldRefs) {
+            if (renamed.contains(f.token().text()) && isProjectField(f)) hits.add(f.token());
         }
         hits.sort(Comparator.comparingInt(Token::start));
 
@@ -93,5 +92,14 @@ public final class Mangler {
             at = t.end();
         }
         return out.append(source, at, source.length()).toString();
+    }
+
+    /**
+     * A field may be renamed only if its chain is rooted in a global the project owns. A null root means the
+     * chain starts from a local or a literal, which the project also owns; a root the project never assigns
+     * is an engine table whose keys must stay as written.
+     */
+    private boolean isProjectField(Scan.FieldRef f) {
+        return f.root() == null || defined.contains(f.root());
     }
 }

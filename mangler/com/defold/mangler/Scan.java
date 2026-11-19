@@ -31,12 +31,20 @@ public final class Scan {
         }
     }
 
+    /**
+     * A field access: `x.name`, `x:name`, `{ name = ... }`, `function x.name()`. {@code root} is the global the
+     * chain hangs off (`rand` in `rand.ffi_ptrs().entropy`), or null when the chain starts from a local, a
+     * literal or an expression. The mangler leaves a field alone if its root is a global the project never
+     * assigns, because such a name is looked up by the engine, not by Lua (`go.delete`, `_G.name`,
+     * `socket.http.request`, `rand.ffi_ptrs().entropy`).
+     */
+    record FieldRef(Token token, String root) {}
+
     final List<Local> locals = new ArrayList<>();
-    final List<Token> globalRefs = new ArrayList<>();      // variables that resolve to a global
-    final List<Token> fieldRefs = new ArrayList<>();       // x.name  x:name  { name = ... }  function x.name()
+    final List<Token> globalRefs = new ArrayList<>();    // variables that resolve to a global
+    final List<FieldRef> fieldRefs = new ArrayList<>();  // x.name  x:name  { name = ... }  function x.name()
     final Set<String> definedGlobals = new HashSet<>();  // globals this file assigns to
     final Set<String> definedFns = new HashSet<>();      // global and field names this file binds to a function
-    final Map<String, Set<String>> fieldsOfGlobal = new HashMap<>();  // global -> field names read off it
     final Set<String> strings = new HashSet<>();         // contents of quoted string literals
 
     public static Scan of(String source) {
@@ -139,8 +147,7 @@ public final class Scan {
     }
 
     private void field(Token t, String root) {
-        fieldRefs.add(t);
-        if (root != null) fieldsOfGlobal.computeIfAbsent(root, k -> new HashSet<>()).add(t.text());
+        fieldRefs.add(new FieldRef(t, root));
     }
 
     // ---- statements ---------------------------------------------------------------------------------------
@@ -283,6 +290,8 @@ public final class Scan {
             boolean fn = i < values.size() && values.get(i).fn();
             if (t.var() != null && t.local() != null) {
                 if (fn) t.local().fn = true;
+                // A later assignment may be the first one to reveal what the local really is.
+                if (i < values.size() && t.local().root == null) t.local().root = values.get(i).root();
             } else if (t.var() != null) {
                 definedGlobals.add(t.var().text());
                 if (fn) definedFns.add(t.var().text());
@@ -348,8 +357,9 @@ public final class Scan {
             root = use(var, local);
         } else {
             expect("(");
-            expr();
+            Ex inner = expr();
             expect(")");
+            root = inner.root();  // `(rand.ffi_ptrs()).x` is still part of `rand`
         }
         for (;;) {
             if (accept(".")) {
@@ -359,15 +369,20 @@ public final class Scan {
                 local = null;
             } else if (accept(":")) {
                 field(name(), root);
-                var = null; local = null; member = null; root = null;
+                var = null; local = null; member = null;
                 args();
+                if ("require".equals(root)) root = null;  // require("x"):x() yields a project module
             } else if (accept("[")) {
                 expr();
                 expect("]");
-                var = null; local = null; member = null; root = null;
+                var = null; local = null; member = null;
+                if ("require".equals(root)) root = null;
             } else if (is("(") || is("{") || current().kind() == Kind.STRING) {
                 args();
-                var = null; local = null; member = null; root = null;
+                var = null; local = null; member = null;
+                // `require("m")` returns a module the project owns; every other call keeps its root so that
+                // fields reached through engine accessors (`rand.ffi_ptrs().entropy`) stay external.
+                if ("require".equals(root)) root = null;
             } else {
                 return new Chain(var, local, member, root);
             }
@@ -398,7 +413,7 @@ public final class Scan {
             } else if (current().kind() == Kind.NAME && toks.get(pos + 1).text().equals("=")) {
                 Token key = name();
                 pos++;
-                fieldRefs.add(key);
+                field(key, null);
                 if (expr().fn()) definedFns.add(key.text());
             } else {
                 expr();
