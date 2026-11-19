@@ -10,33 +10,33 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Replaces every project-defined identifier with `_<base32 of the name's XXH3, keyed by the seed>`.
+ * Renames every project-defined identifier to `_<base32(XXH3(name, seed))>`.
  *
- * The new name depends only on the old name, so the same name is renamed the same way in every file. That is
- * what lets one file call a function another file defines, and it is also why no collision handling is needed:
- * renaming is one-to-one, so every binding in the program stays exactly as it was.
+ * The result depends only on the name, so the same identifier is renamed identically in every file. That
+ * keeps cross-file references working and makes collision handling unnecessary: the rename is one-to-one,
+ * so every binding in the program keeps its identity.
  *
  * Which names are renamed is decided once for the whole project:
  *
- *  - a local variable is always renamed (it is scope-resolved, so it can never be reached from outside);
- *  - a global is renamed if the project assigns it somewhere;
- *  - a field is renamed if the project assigns it somewhere, and only at sites where the chain is rooted in a
- *    project-owned global or in a local/literal. Field accesses on a global the project never assigns are
- *    looked up by the engine, not by Lua (`go.delete`, `_G.name`, `socket.http.request`,
- *    `rand.ffi_ptrs().entropy`), so those tokens are left alone individually rather than pinning the field
- *    name across the whole project;
- *  - a name that also appears as a table-key string literal (`t["name"]`, `{["name"] = ...}`) is left alone,
- *    because it could be reached from Lua without an identifier in sight. Non-key strings (arguments,
- *    `require` paths, log messages) do not pin anything.
+ *  - Locals: always. They are scope-resolved, so nothing outside can reach them.
+ *  - Globals: if the project assigns them somewhere. A global the project only reads belongs to the engine
+ *    (`print`, `go`) and must keep its name.
+ *  - Fields: if the project assigns them, and only where the access chain is rooted in a project-owned
+ *    global or in a local/literal. Chains rooted in an engine global (`go.delete`, `socket.http.request`,
+ *    `rand.ffi_ptrs().entropy`) are looked up by the engine, so those tokens are left alone rather than
+ *    pinning the field name across the whole project.
+ *  - A name that also appears as a table-key string literal (`t["name"]`, `{["name"] = ...}`) is left
+ *    alone, since it can be reached from Lua without an identifier in sight. Non-key strings (arguments,
+ *    `require` paths, log messages) pin nothing.
  *
- * Defold gives every project the shared state, so a global assigned in one script is visible in every other
- * one. There is no per-file environment that could mask an engine global, and renaming is therefore transparent
- * as long as it is uniform: `pinned = used - definedGlobals` correctly captures "the engine owns this name"
- * because the project never assigns it anywhere. Once the project does assign a name, it owns it everywhere.
+ * Defold scripts share one global state, so a global assigned in one script is visible everywhere. There is
+ * no per-file environment that could mask an engine global, and renaming stays transparent as long as it is
+ * uniform: `pinned = used - definedGlobals` captures "the engine owns this name" because the project never
+ * assigns it anywhere. Once the project does assign a name, it owns it everywhere.
  *
- * Defold lifecycle callbacks and Lua string/file method names are the two exceptions. The engine looks callbacks
- * up by name on the script table, and the string/file metatables dispatch methods by name; neither can find
- * `_a1b2c3` where it expects `init` or `format`. They are excluded unconditionally.
+ * Two classes of name are excluded unconditionally because the engine looks them up by string: Defold
+ * lifecycle callbacks (looked up on the script table) and Lua string/file methods (dispatched by the
+ * string/file metatables). Neither metatable can find `_a1b2c3` where it expects `init` or `format`.
  */
 public final class Mangler {
 
@@ -53,8 +53,8 @@ public final class Mangler {
 
     private final long seed;
     private final Set<String> userExcluded = new HashSet<>();
-    private final Set<String> definedGlobals;  // globals the project assigns to, project-wide
-    private final Set<String> renamed = new HashSet<>();  // globals and fields to rename, project-wide
+    private final Set<String> definedGlobals;  // globals the project assigns to
+    private final Set<String> renamed = new HashSet<>();  // globals and fields to rename
 
     public Mangler(long seed, Set<String> userExcluded, Collection<Scan> project) {
         this.seed = seed;
@@ -71,8 +71,8 @@ public final class Mangler {
         }
         this.definedGlobals = globals;
 
-        // A global the project reads but never assigns belongs to the engine (`print`, `hash`, `go`); a name
-        // that is also a table-key string literal may be looked up as a string (`t["name"]`).
+        // A global the project reads but never assigns is the engine's (`print`, `hash`, `go`); a name that
+        // also appears as a table-key string literal can be reached as a string (`t["name"]`). Both stay put.
         Set<String> pinned = new HashSet<>(used);
         pinned.removeAll(globals);
         pinned.addAll(strings);
@@ -125,11 +125,12 @@ public final class Mangler {
         return f.root() == null || definedGlobals.contains(f.root());
     }
 
+    private static final String BASE32_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
+
     private static String base32(long value) {
-        char[] alphabet = "abcdefghijklmnopqrstuvwxyz234567".toCharArray();
         char[] result = new char[13];
         for (int i = 12; i >= 0; i--) {
-            result[i] = alphabet[(int) (value & 31)];
+            result[i] = BASE32_ALPHABET.charAt((int) (value & 31));
             value >>>= 5;
         }
         return new String(result);

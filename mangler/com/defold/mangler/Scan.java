@@ -11,18 +11,19 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Reads one Lua file in a single pass and sorts its identifier tokens into the few classes the mangler cares
- * about. It follows the shape of the grammar and tracks lexical scopes, but builds no syntax tree: scope
- * resolution is the only thing renaming needs.
+ * Single-pass reader for one Lua file. Sorts identifier tokens into the classes the mangler cares about:
+ * locals with their scope-resolved uses, global references, field references, and the sets of names the file
+ * defines or pins. Follows the shape of the grammar and tracks lexical scopes, but builds no syntax tree:
+ * scope resolution is the only thing renaming needs.
  *
- * Throws IllegalArgumentException if the source is not Lua this class understands.
+ * Throws IllegalArgumentException on Lua this class does not understand.
  */
 public final class Scan {
 
-    /** A local variable. Renaming it is always safe; every declaration and reference is tracked by scope. */
+    /** A local variable. Every declaration and reference is tracked by scope, so renaming it is always safe. */
     static final class Local {
         final String name;
-        String root;  // the global this local is an alias of (`local go = go`), if any
+        String root;  // global this local aliases (`local go = go`), if any
         final List<Token> uses = new ArrayList<>();  // the declaration and every reference
 
         Local(String name) {
@@ -31,17 +32,16 @@ public final class Scan {
     }
 
     /**
-     * A field access: `x.name`, `x:name`, `{ name = ... }`, `function x.name()`. {@code root} is the global the
-     * chain hangs off (`rand` in `rand.ffi_ptrs().entropy`), or null when the chain starts from a local, a
-     * literal or an expression. The mangler leaves a field alone if its root is a global the project never
-     * assigns, because such a name is looked up by the engine, not by Lua (`go.delete`, `_G.name`,
-     * `socket.http.request`, `rand.ffi_ptrs().entropy`).
+     * A field access: `x.name`, `x:name`, `{ name = ... }`, `function x.name()`. {@code root} is the global
+     * the chain hangs off (`rand` in `rand.ffi_ptrs().entropy`), or null when the chain starts from a local, a
+     * literal or an expression. The mangler skips a field whose root is a global the project never assigns,
+     * because such a name is looked up by the engine, not by Lua (`go.delete`, `socket.http.request`).
      */
     record FieldRef(Token token, String root) {}
 
     final List<Local> locals = new ArrayList<>();
     final List<Token> globalRefs = new ArrayList<>();    // variables that resolve to a global
-    final List<FieldRef> fieldRefs = new ArrayList<>();  // x.name  x:name  { name = ... }  function x.name()
+    final List<FieldRef> fieldRefs = new ArrayList<>();  // x.name, x:name, { name = ... }, function x.name()
     final Set<String> definedGlobals = new HashSet<>();  // globals this file assigns to
     final Set<String> definedFields = new HashSet<>();   // field names this file assigns to
     final Set<String> strings = new HashSet<>();         // contents of table-key string literals
@@ -53,12 +53,12 @@ public final class Scan {
         return s;
     }
 
-    // What an expression turned out to be: the global that a lone `global.a.b` chain was rooted in.
+    // What an expression turned out to be: the root global of a lone `global.a.b` chain.
     private record Ex(String root) {
         static final Ex OTHER = new Ex(null);
     }
 
-    // The tail of a suffixed expression (`a`, `a.b`, `f().c`), which is what assignments need to know.
+    // The tail of a suffixed expression (`a`, `a.b`, `f().c`): what assignments need to know.
     private record Chain(Token var, Local local, Token field, String root) {}
 
     private static final class Scope {
@@ -70,8 +70,10 @@ public final class Scan {
         }
     }
 
+    // Every infix operator. Precedence is irrelevant to scoping, so the parser only needs the set.
     private static final Set<String> BINARY = Set.of(
-            "+", "-", "*", "/", "%", "^", "..", "==", "~=", "<", "<=", ">", ">=", "and", "or");
+        "+", "-", "*", "/", "%", "^", "..", "==", "~=", "<", "<=", ">", ">=", "and", "or"
+    );
 
     private final List<Token> toks;
     private int pos;
@@ -130,7 +132,7 @@ public final class Scan {
         return null;
     }
 
-    /** Records a variable reference and returns the global it stands for, if it stands for one. */
+    /** Records a variable reference and returns the global it stands for, if any. */
     private String use(Token t, Local local) {
         if (local == null) {
             globalRefs.add(t);
@@ -144,7 +146,7 @@ public final class Scan {
         fieldRefs.add(new FieldRef(t, root));
     }
 
-    /** If {@code t} is a quoted string literal, its contents are a string that could name a table key. */
+    /** If {@code t} is a quoted string literal, its contents could name a table key, so record them. */
     private void trackKeyString(Token t) {
         if (t.kind() != Kind.STRING) return;
         String x = t.text();
@@ -198,7 +200,7 @@ public final class Scan {
         } else if (accept("for")) {
             forStat();
         } else if (accept("repeat")) {
-            scope = new Scope(scope);  // `until` can see the body's locals
+            scope = new Scope(scope);  // the `until` expression can see the body's locals
             block();
             expect("until");
             expr();
@@ -260,7 +262,7 @@ public final class Scan {
 
     private void localStat() {
         if (accept("function")) {
-            declare(name());  // declared first, so the body can recurse
+            declare(name());  // declared before the body, so the function can recurse
             body(false);
             return;
         }
@@ -302,7 +304,7 @@ public final class Scan {
         return out;
     }
 
-    /** Operator precedence is irrelevant to scoping, so an expression is just operands joined by operators. */
+    /** An expression is just operands joined by operators; precedence does not affect scoping. */
     private Ex expr() {
         boolean lone = true;
         Ex first = Ex.OTHER;
@@ -356,16 +358,16 @@ public final class Scan {
         for (;;) {
             if (accept(".")) {
                 member = name();
-                field(member, root);  // `root` survives: socket.http.request is still part of `socket`
+                field(member, root);  // `root` survives, so `socket.http.request` is still part of `socket`
                 var = null;
                 local = null;
             } else if (accept(":")) {
                 field(name(), root);
                 var = null; local = null; member = null;
                 args();
-                if ("require".equals(root)) root = null;  // require("x"):x() yields a project module
+                if ("require".equals(root)) root = null;  // require("x"):x() returns a project module
             } else if (accept("[")) {
-                trackKeyString(current());  // `t["name"]` pins `name`, since `t.name` may rename it
+                trackKeyString(current());  // `t["name"]` pins `name`, since `t.name` may be renamed
                 expr();
                 expect("]");
                 var = null; local = null; member = null;
@@ -373,8 +375,8 @@ public final class Scan {
             } else if (is("(") || is("{") || current().kind() == Kind.STRING) {
                 args();
                 var = null; local = null; member = null;
-                // `require("m")` returns a module the project owns; every other call keeps its root so that
-                // fields reached through engine accessors (`rand.ffi_ptrs().entropy`) stay external.
+                // require("m") returns a project-owned module; other calls keep their root, so fields
+                // reached through engine accessors (`rand.ffi_ptrs().entropy`) stay external.
                 if ("require".equals(root)) root = null;
             } else {
                 return new Chain(var, local, member, root);

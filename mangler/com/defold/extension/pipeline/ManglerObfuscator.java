@@ -28,24 +28,24 @@ import java.util.stream.Collectors;
  * Hooks {@link Mangler} into Bob's Lua pipeline. Settings live in game.project:
  * <pre>
  * [mangler]
- * disabled = 0                 ; 1 turns the plugin off
- * seed = 1234567890123456789   ; optional; random for every build if absent
- * exclude = name1, name2       ; names never to rename
+ * disabled = 0               ; 1 turns the plugin off
+ * seed = 1234567890123456789 ; optional; random for every build if absent
+ * exclude = name1, name2     ; names never to rename
  * </pre>
  */
 public final class ManglerObfuscator implements ILuaObfuscator {
 
     private static final List<String> LUA = List.of(".lua", ".script", ".gui_script", ".render_script");
 
-    private boolean disabled = false;
+    private final boolean disabled;
     private final long seed;
     private final Set<String> excluded;
 
-    private File projectRoot = null;
+    private File projectRoot;
     private Mangler mangler;
-    private final Map<File, String> unreadable = new HashMap<>();
-    private final Set<File> projectFiles = new HashSet<>();
-    private final Map<Object, Scan> scans = new HashMap<>();
+    private final Map<File, String> unreadable = new HashMap<>();     // scanned files that failed to parse
+    private final Set<File> projectFiles = new HashSet<>();           // every Lua file under the project root
+    private final Map<Object, Scan> scans = new HashMap<>();          // keyed by File, or by path for stragglers
 
     public ManglerObfuscator() throws InstantiationException {
         try {
@@ -85,6 +85,7 @@ public final class ManglerObfuscator implements ILuaObfuscator {
             }
         }
 
+        // Files outside the pre-scan set (generated ones, say) are keyed by path so repeated calls reuse the scan.
         Object key = file != null ? file : path;
         if (!scans.containsKey(key)) {
             try {
@@ -115,6 +116,7 @@ public final class ManglerObfuscator implements ILuaObfuscator {
         return projectRoot;
     }
 
+    /** Reads every Lua file under the project root once, so the mangler sees the whole name space up front. */
     private void ensureBaseline(File root) throws IOException {
         if (mangler != null) return;
         for (File file : luaFiles(root)) {
@@ -129,6 +131,7 @@ public final class ManglerObfuscator implements ILuaObfuscator {
         mangler = new Mangler(seed, excluded, scans.values());
     }
 
+    /** Maps a path Bob hands us to the canonical file we scanned, or null if it is not a project Lua file. */
     private File locate(String path) {
         try {
             File f = new File(path).getCanonicalFile();
@@ -143,8 +146,8 @@ public final class ManglerObfuscator implements ILuaObfuscator {
         Files.walkFileTree(root.toPath(), new SimpleFileVisitor<>() {
             @Override
             public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                String n = dir.getFileName().toString();
-                boolean skip = !dir.equals(root.toPath()) && n.equals("build");
+                // `build/` only exists at the project root; skip it so we don't pick up our own output.
+                boolean skip = !dir.equals(root.toPath()) && dir.getFileName().toString().equals("build");
                 return skip ? FileVisitResult.SKIP_SUBTREE : FileVisitResult.CONTINUE;
             }
 

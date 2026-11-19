@@ -6,7 +6,7 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** Splits Lua 5.1 / LuaJIT source into tokens that remember their offsets, so renames can be spliced into the text. */
+/** Splits Lua 5.1 source into tokens that remember their offsets, so renames can be spliced in. */
 final class Lexer {
 
     enum Kind { NAME, KEYWORD, STRING, NUMBER, OP, EOF }
@@ -18,8 +18,8 @@ final class Lexer {
         "in", "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while"
     );
 
-    // One alternative per token class, tried in this order. Quoted strings use possessive loops so that very
-    // long literals cannot overflow the regex engine's stack.
+    // One alternative per token class, tried in this order. Quoted strings use possessive loops so very long
+    // literals cannot overflow the regex engine's stack.
     private static final Pattern TOKEN = Pattern.compile(
         "(?<skip>\\s+|--\\[(?<e1>=*)\\[.*?\\]\\k<e1>\\]|--(?!\\[=*\\[)[^\\n]*)"
         + "|(?<str>\\[(?<e2>=*)\\[.*?\\]\\k<e2>\\]"

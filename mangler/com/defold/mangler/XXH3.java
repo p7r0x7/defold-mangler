@@ -3,18 +3,9 @@ package com.defold.mangler;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Pure-Java port of XXH3's 64-bit variant ({@code XXH3_64bits_withSeed}),
- * ported directly from the reference implementation in xxHash's
- * {@code xxhash.h} (Yann Collet, BSD 2-Clause). See https://xxhash.com and
+ * Pure-Java port of XXH3's 64-bit variant ({@code XXH3_64bits_withSeed}), ported from the reference
+ * implementation in xxHash's {@code xxhash.h} (Yann Collet, BSD 2-Clause). See https://xxhash.com and
  * https://github.com/Cyan4973/xxHash.
- *
- * Only the scalar code paths are ported (no SIMD), which is sufficient for
- * bit-exact compatibility with the reference algorithm -- the scalar paths
- * are what every xxHash binding falls back to and they produce identical
- * output to the vectorized ones.
- *
- * This class is self-contained (no native dependency) so the extension does
- * not need to ship a JNI binding into bob's plugin classpath.
  */
 final class XXH3 {
 
@@ -119,7 +110,7 @@ final class XXH3 {
 
     private static long mult32to64(long x, long y) { return (x & 0xFFFFFFFFL) * (y & 0xFFFFFFFFL); }
 
-    /** 64x64->128 unsigned multiply, folded by xor of the two halves (XXH3_mul128_fold64). */
+    /** 64x64->128 unsigned multiply, folded by xor of the two halves ({@code XXH3_mul128_fold64}). */
     private static long mul128Fold64(long lhs, long rhs) {
         long lo_lo = mult32to64(lhs, rhs);
         long hi_lo = mult32to64(lhs >>> 32, rhs);
@@ -141,7 +132,7 @@ final class XXH3 {
         return h64;
     }
 
-    /** XXH3_avalanche (fast variant used for already-mixed accumulators). */
+    /** The fast XXH3 avalanche, used on already-mixed accumulators. */
     private static long avalancheFast(long h64) {
         h64 = xorshift64(h64, 37);
         h64 *= 0x165667919E3779F9L;
